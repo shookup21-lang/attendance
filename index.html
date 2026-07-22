@@ -148,12 +148,16 @@ main{padding:12px 10px 84px}
   padding:7px 11px;font-size:12px;font-weight:700;font-family:inherit;cursor:pointer;flex:none}
 .rot.on{background:var(--ink);color:#f2f0eb;border-color:var(--ink)}
 
-/* 가로 보기: 화면을 90도 회전 */
-.sheet.land{position:fixed;top:0;left:100vw;inset:auto;
+/* 가로 보기: 내용만 90도 회전 (바깥 틀은 그대로 두어 스크롤 튐 방지) */
+.sheet.land{overflow:hidden}
+.landbox{position:fixed;z-index:61;
+  top:50%;left:50%;
   width:100vh;height:100vw;
-  transform:rotate(90deg);transform-origin:0 0;
-  display:flex;flex-direction:column;overflow:hidden}
-.sheet.land .matwrap{flex:1;min-height:0}
+  margin-top:-50vw;margin-left:-50vh;   /* 회전 전 중앙 정렬 */
+  transform:rotate(90deg);
+  display:flex;flex-direction:column;
+  background:var(--paper);overflow:hidden}
+.landbox .matwrap{flex:1;min-height:0;overflow:auto;-webkit-overflow-scrolling:touch}
 .mnav{border:1px solid var(--line);background:var(--paper);color:var(--ink);border-radius:8px;
   flex:0 0 34px;height:34px;font-size:20px;font-weight:700;font-family:inherit;cursor:pointer;
   line-height:1;padding:0}
@@ -376,10 +380,16 @@ table.mat th.sumh{background:#2c3543}
 
 <script>
 /* ══════════════════════════════════════════════════════
-   ① 여기에 Apps Script 웹앱 URL을 붙여넣으세요
-      비워두면 서버 없이 이 기기에서만 동작합니다.
+   서버 주소
+   아래 기본값을 쓰거나, 앱에서 상태 표시를 눌러 바꿀 수 있습니다.
+   (한 번 바꾸면 이 기기에 저장되어 파일을 새로 받아도 유지됩니다)
    ══════════════════════════════════════════════════════ */
-const API_URL = "https://script.google.com/macros/s/AKfycbyMazx-rV3QQ-5DBdijrMSsNgkE2l7VSBUf_Prz-Ae8c7-BBkl7s3zXtVc4aCrhXkuoXQ/exec";
+const DEFAULT_API = "https://script.google.com/macros/s/AKfycbyMazx-rV3QQ-5DBdijrMSsNgkE2l7VSBUf_Prz-Ae8c7-BBkl7s3zXtVc4aCrhXkuoXQ/exec";
+const LS_API = "att_api_v1";
+let API_URL = (function(){
+  try{ const v=localStorage.getItem(LS_API); if(v) return v; }catch(e){}
+  return DEFAULT_API;
+})();
 
 /* ── 직원 명단 (서버 연결 시 서버 값으로 덮어씀) ── */
 let STAFF = ["김민수","이서연","박준호","최지우","정하늘","강도윤","윤채원","임태양",
@@ -638,21 +648,36 @@ function renderMatrix(){
   $("#matwrap").querySelectorAll("td.tap").forEach(td=>{
     td.onclick=()=>openPop(td.dataset.n,td.dataset.d); });
 }
-/* 가로 보기 — CSS 회전이 기본. 기기 회전 잠금은 되면 추가로 적용 */
-let land=false;
+/* 가로 보기 — 내용을 회전 컨테이너로 옮긴다 */
+let land=false, landbox=null;
 function setLand(v){
   land=v;
-  $("#sheet").classList.toggle("land",land);
   $("#rotBtn").classList.toggle("on",land);
   $("#rotBtn").textContent = land ? "⟳ 세로" : "⟳ 가로";
-  // 실제 화면 회전이 가능하면 보너스로 걸어둔다 (실패해도 CSS 회전은 이미 적용됨)
-  try{
-    if(land){
-      if(screen.orientation && screen.orientation.lock) screen.orientation.lock("landscape").catch(()=>{});
-    }else{
-      if(screen.orientation && screen.orientation.unlock) screen.orientation.unlock();
-      if(document.fullscreenElement && document.exitFullscreen) document.exitFullscreen().catch(()=>{});
+
+  if(land){
+    if(!landbox){
+      landbox=document.createElement("div");
+      landbox.className="landbox";
+      document.body.appendChild(landbox);
     }
+    // 헤더/범례/표를 통째로 회전 컨테이너로 이동
+    const sh=$("#sheet");
+    [...sh.children].forEach(c=>landbox.appendChild(c));
+    sh.classList.add("land");
+    landbox.style.display="flex";
+  }else{
+    if(landbox){
+      const sh=$("#sheet");
+      [...landbox.children].forEach(c=>sh.appendChild(c));
+      landbox.style.display="none";
+      sh.classList.remove("land");
+    }
+  }
+  // 기기 회전 잠금은 되면 보너스로 (실패해도 위 회전은 이미 적용됨)
+  try{
+    if(land){ screen.orientation && screen.orientation.lock && screen.orientation.lock("landscape").catch(()=>{}); }
+    else{ screen.orientation && screen.orientation.unlock && screen.orientation.unlock(); }
   }catch(e){}
 }
 $("#rotBtn").onclick=()=>setLand(!land);
@@ -975,10 +1000,41 @@ async function pull(silent){
 }
 
 /* 시작 */
-$("#sync").onclick=()=>{
-  if(!API_URL){ toast("서버 미설정 (로컬 모드)"); return; }
-  if(lastErr){ alert("동기화 오류\n\n"+lastErr+"\n\n대기 중: "+pending.length+"건\n\n확인을 누르면 다시 시도합니다."); }
-  if(pending.length) flush(); else pull(false);
+$("#sync").onclick=async ()=>{
+  let msg = "서버 주소\n" + (API_URL||"(비어 있음)") + "\n\n";
+  msg += "대기 중: " + pending.length + "건\n";
+  if(lastErr) msg += "마지막 오류: " + lastErr + "\n";
+  msg += "\n[확인] 연결 시험   [취소] 주소 변경";
+
+  if(confirm(msg)){
+    if(!API_URL){ toast("주소가 비어 있습니다"); return; }
+    setStatus("busy","시험 중");
+    try{
+      const d=await jsonp(API_URL,{});
+      if(d && d.ok){
+        alert("연결 성공\n\n서버 기록: "+(d.records||[]).length+"건\n"+
+              "서버 명단: "+((d.staff||[]).length)+"명\n서버 시각: "+(d.serverTime||"-"));
+        applyServer(d); refreshAll(); setStatus("ok","최신");
+        if(pending.length) flush();
+      }else{
+        alert("서버가 오류를 반환했습니다.\n\n"+((d&&d.error)||"내용 없음"));
+        setStatus("err","오류");
+      }
+    }catch(e){
+      alert("연결 실패: "+e.message+"\n\n확인할 점\n"+
+            "1) 배포 시 '액세스 권한'을 '모든 사용자'로 했는지\n"+
+            "2) 주소 끝이 /exec 인지 (/dev 는 본인만 접속 가능)\n"+
+            "3) Code.gs 수정 후 '배포 관리'에서 새 버전으로 갱신했는지");
+      setStatus("err","연결 실패");
+    }
+  }else{
+    const v=prompt("Apps Script 웹앱 주소 (/exec 로 끝나야 합니다)\n비우면 서버 없이 이 기기에서만 사용합니다.", API_URL||"");
+    if(v===null) return;
+    API_URL=v.trim();
+    try{ localStorage.setItem(LS_API,API_URL); }catch(e){}
+    if(API_URL){ toast("주소 저장됨"); lastErr=""; pull(false); }
+    else { setStatus("err","미설정"); toast("서버 없이 사용"); }
+  }
 };
 
 function boot(){
@@ -994,8 +1050,9 @@ function boot(){
   }
   paintDate(); renderGrid();
   if(!API_URL){
-    setStatus("off","로컬");
+    setStatus("err","미설정");
     if(!records.length){ records=makeDemo(); renderGrid(); }
+    setTimeout(()=>toast("서버 미설정 — 저장 안 됨"),600);
     return;
   }
   pull(false);
