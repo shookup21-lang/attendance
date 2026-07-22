@@ -895,7 +895,53 @@ function setStatus(state,msg){
 }
 
 /* JSONP: Apps Script는 CORS 프리플라이트를 지원하지 않아 script 태그로 호출 */
+/* 서버 호출
+   1순위: fetch + credentials:"omit"  → 구글 로그인 쿠키를 보내지 않음
+          (크롬에 다른 구글 계정이 로그인돼 있어도 영향 없음)
+          Content-Type을 text/plain 으로 두면 CORS 프리플라이트가 생략된다.
+   2순위: JSONP(script 태그) → fetch가 막힌 환경 대비 */
 function jsonp(url,params){
+  return apiCall(url,params);
+}
+
+let lastVia="";
+async function apiCall(url,params){
+  const payload = (params && params.payload) || "";
+  try{
+    const res = await fetchOmit(url,payload);
+    if(res){ lastVia="fetch"; return res; }
+  }catch(e){
+    lastVia="fetch실패("+e.message+")";
+  }
+  const r = await jsonpCall(url,params);
+  lastVia="jsonp";
+  return r;
+}
+
+function fetchOmit(url,payload){
+  const ctl = ("AbortController" in window) ? new AbortController() : null;
+  const t = setTimeout(()=>{ try{ ctl && ctl.abort(); }catch(e){} }, 20000);
+  const opt = {
+    method: payload ? "POST" : "GET",
+    credentials: "omit",          // ← 구글 계정 쿠키를 싣지 않음
+    redirect: "follow",
+    signal: ctl ? ctl.signal : undefined
+  };
+  if(payload){
+    opt.headers = {"Content-Type":"text/plain;charset=utf-8"};  // 프리플라이트 회피
+    opt.body = payload;
+  }
+  return fetch(url,opt)
+    .then(r=>{ clearTimeout(t); if(!r.ok) throw new Error("http "+r.status); return r.text(); })
+    .then(txt=>{
+      const i=txt.indexOf("{"), j=txt.lastIndexOf("}");
+      if(i<0||j<0) throw new Error("bad response");
+      return JSON.parse(txt.slice(i,j+1));
+    })
+    .catch(e=>{ clearTimeout(t); throw e; });
+}
+
+function jsonpCall(url,params){
   return new Promise((res,rej)=>{
     const cb="cb_"+Date.now()+"_"+Math.floor(Math.random()*1e6);
     const t=setTimeout(()=>{ cleanup(); rej(new Error("timeout")); },20000);
@@ -1016,6 +1062,7 @@ async function pull(silent){
 $("#sync").onclick=async ()=>{
   let msg = "서버 주소\n" + (API_URL||"(비어 있음)") + "\n\n";
   msg += "대기 중: " + pending.length + "건\n";
+  if(lastVia) msg += "통신 방식: " + lastVia + "\n";
   if(lastErr) msg += "마지막 오류: " + lastErr + "\n";
   msg += "\n[확인] 연결 시험   [취소] 주소 변경";
 
@@ -1025,7 +1072,7 @@ $("#sync").onclick=async ()=>{
     try{
       const d=await jsonp(API_URL,{});
       if(d && d.ok){
-        alert("연결 성공\n\n서버 기록: "+(d.records||[]).length+"건\n"+
+        alert("연결 성공 ("+lastVia+")\n\n서버 기록: "+(d.records||[]).length+"건\n"+
               "서버 명단: "+((d.staff||[]).length)+"명\n서버 시각: "+(d.serverTime||"-"));
         applyServer(d); refreshAll(); setStatus("ok","최신");
         if(pending.length) flush();
