@@ -1028,8 +1028,12 @@ $("#sync").onclick=async ()=>{
       setStatus("err","연결 실패");
     }
   }else{
-    const v=prompt("Apps Script 웹앱 주소 (/exec 로 끝나야 합니다)\n비우면 서버 없이 이 기기에서만 사용합니다.", API_URL||"");
+    const v=prompt("Apps Script 웹앱 주소 (/exec 로 끝나야 합니다)\n\n주소 대신 지움 이라고 입력하면 대기 중인 "+pending.length+"건을 버립니다.", API_URL||"");
     if(v===null) return;
+    if(v.trim()==="지움"){
+      pending=[]; lsSet(LS_QUEUE,pending); lastErr="";
+      toast("대기 목록 비움"); setStatus("ok","최신"); return;
+    }
     API_URL=v.trim();
     try{ localStorage.setItem(LS_API,API_URL); }catch(e){}
     if(API_URL){ toast("주소 저장됨"); lastErr=""; pull(false); }
