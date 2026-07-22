@@ -148,12 +148,12 @@ main{padding:12px 10px 84px}
   padding:7px 11px;font-size:12px;font-weight:700;font-family:inherit;cursor:pointer;flex:none}
 .rot.on{background:var(--ink);color:#f2f0eb;border-color:var(--ink)}
 
-/* 가로 보기: 내용만 90도 회전 (바깥 틀은 그대로 두어 스크롤 튐 방지) */
+/* 가로 보기: 내용만 90도 회전 (화면 중앙 기준이라 넘침 없음) */
 .sheet.land{overflow:hidden}
 .landbox{position:fixed;z-index:61;
   top:50%;left:50%;
   width:100vh;height:100vw;
-  margin-top:-50vw;margin-left:-50vh;   /* 회전 전 중앙 정렬 */
+  margin-top:-50vw;margin-left:-50vh;
   transform:rotate(90deg);
   display:flex;flex-direction:column;
   background:var(--paper);overflow:hidden}
@@ -380,9 +380,7 @@ table.mat th.sumh{background:#2c3543}
 
 <script>
 /* ══════════════════════════════════════════════════════
-   서버 주소
-   아래 기본값을 쓰거나, 앱에서 상태 표시를 눌러 바꿀 수 있습니다.
-   (한 번 바꾸면 이 기기에 저장되어 파일을 새로 받아도 유지됩니다)
+   서버 주소 — 앱에서 상태 표시를 눌러 바꿀 수 있습니다.
    ══════════════════════════════════════════════════════ */
 const DEFAULT_API = "https://script.google.com/macros/s/AKfycbz4Es_pi0KSuioWk5EX9xGpPdYL5PvmPZReP0qCGKBzkfEIGdqApORHK-wOOZMSR5v84w/exec";
 const LS_API = "att_api_v1";
@@ -648,37 +646,33 @@ function renderMatrix(){
   $("#matwrap").querySelectorAll("td.tap").forEach(td=>{
     td.onclick=()=>openPop(td.dataset.n,td.dataset.d); });
 }
-/* 가로 보기 — 내용을 회전 컨테이너로 옮긴다 */
+/* 가로 보기
+   앱은 매니페스트에서 세로 고정(portrait)이라 폰을 돌려도 화면은 세로.
+   전체 보기에서만 이 버튼으로 내용을 90도 돌려 가로처럼 본다. */
 let land=false, landbox=null;
 function setLand(v){
   land=v;
-  $("#rotBtn").classList.toggle("on",land);
-  $("#rotBtn").textContent = land ? "⟳ 세로" : "⟳ 가로";
-
+  const sh=$("#sheet");
   if(land){
     if(!landbox){
       landbox=document.createElement("div");
       landbox.className="landbox";
       document.body.appendChild(landbox);
     }
-    // 헤더/범례/표를 통째로 회전 컨테이너로 이동
-    const sh=$("#sheet");
-    [...sh.children].forEach(c=>landbox.appendChild(c));
+    if(landbox.children.length===0){
+      [...sh.children].forEach(c=>landbox.appendChild(c));
+    }
     sh.classList.add("land");
     landbox.style.display="flex";
   }else{
-    if(landbox){
-      const sh=$("#sheet");
+    if(landbox && landbox.children.length){
       [...landbox.children].forEach(c=>sh.appendChild(c));
-      landbox.style.display="none";
-      sh.classList.remove("land");
     }
+    if(landbox) landbox.style.display="none";
+    sh.classList.remove("land");
   }
-  // 기기 회전 잠금은 되면 보너스로 (실패해도 위 회전은 이미 적용됨)
-  try{
-    if(land){ screen.orientation && screen.orientation.lock && screen.orientation.lock("landscape").catch(()=>{}); }
-    else{ screen.orientation && screen.orientation.unlock && screen.orientation.unlock(); }
-  }catch(e){}
+  $("#rotBtn").classList.toggle("on",land);
+  $("#rotBtn").textContent = land ? "⟳ 세로" : "⟳ 가로";
 }
 $("#rotBtn").onclick=()=>setLand(!land);
 
@@ -919,9 +913,21 @@ function jsonp(url,params){
 /* 서버 응답을 로컬 상태에 반영 */
 function applyServer(d){
   if(!d || !d.ok) return false;
-  records = (d.records||[]).map(r=>({date:r.date,name:r.name,in:r.in||"",out:r.out||""}));
-  if(Array.isArray(d.staff) && d.staff.length){ STAFF=d.staff.slice().sort(byName); }
-  if(Array.isArray(d.breaks) && d.breaks.length){ BREAKS=d.breaks; }
+  // 아직 못 보낸 내 변경분은 서버 값으로 덮지 않는다
+  const waitStaff  = pending.some(p=>p.kind==="staff");
+  const waitBreaks = pending.some(p=>p.kind==="breaks");
+  const waitRec    = new Set(pending.filter(p=>p.kind==="rec").map(p=>p.date+"|"+p.name));
+
+  const mine = records.filter(r=>waitRec.has(r.date+"|"+r.name));
+  const srv  = (d.records||[])
+      .filter(r=>!waitRec.has(r.date+"|"+r.name))
+      .map(r=>({date:r.date,name:r.name,in:r.in||"",out:r.out||""}));
+  records = srv.concat(mine);
+
+  // 빈 배열도 유효한 값(전원 삭제) — length 검사하면 삭제가 되돌아온다
+  if(!waitStaff  && Array.isArray(d.staff))  STAFF=d.staff.slice().sort(byName);
+  if(!waitBreaks && Array.isArray(d.breaks)) BREAKS=d.breaks;
+
   lsSet(LS_CACHE,{records,staff:STAFF,breaks:BREAKS});
   return true;
 }
@@ -933,20 +939,27 @@ function queueUpsert(date,name){
   pending=pending.filter(p=>!(p.kind==="rec"&&p.date===date&&p.name===name));
   pending.push({kind:"rec",date,name,in:r.in||"",out:r.out||""});
   lsSet(LS_QUEUE,pending);
-  flush();
+  setStatus("busy",`대기 ${pending.length}`);
+  flushSoon();
+}
+/* 연속 입력을 모아서 한 번에 전송 */
+let flushT=null;
+function flushSoon(ms){
+  clearTimeout(flushT);
+  flushT=setTimeout(flush, ms===undefined?800:ms);
 }
 /* 설정도 같은 큐를 태운다 — 실패하면 자동 재시도됨 */
 function queueStaff(){
   if(!API_URL) return;
   pending=pending.filter(p=>p.kind!=="staff");
   pending.push({kind:"staff",staff:STAFF.slice()});
-  lsSet(LS_QUEUE,pending); flush();
+  lsSet(LS_QUEUE,pending); flushSoon(1200);
 }
 function queueBreaks(){
   if(!API_URL) return;
   pending=pending.filter(p=>p.kind!=="breaks");
   pending.push({kind:"breaks",breaks:JSON.parse(JSON.stringify(BREAKS))});
-  lsSet(LS_QUEUE,pending); flush();
+  lsSet(LS_QUEUE,pending); flushSoon(1200);
 }
 
 let lastErr="";
@@ -1023,7 +1036,7 @@ $("#sync").onclick=async ()=>{
     }catch(e){
       alert("연결 실패: "+e.message+"\n\n확인할 점\n"+
             "1) 배포 시 '액세스 권한'을 '모든 사용자'로 했는지\n"+
-            "2) 주소 끝이 /exec 인지 (/dev 는 본인만 접속 가능)\n"+
+            "2) 주소 끝이 /exec 인지\n"+
             "3) Code.gs 수정 후 '배포 관리'에서 새 버전으로 갱신했는지");
       setStatus("err","연결 실패");
     }
@@ -1061,7 +1074,7 @@ function boot(){
   }
   pull(false);
   setInterval(()=>{ if(document.hidden) return;
-    if(pending.length) flush(); else pull(true); },30000);   // 30초마다 동기화·재시도
+    if(pending.length) flush(); else pull(true); },10000);   // 10초마다 동기화·재시도
   document.addEventListener("visibilitychange",()=>{ if(!document.hidden) pull(true); });
   window.addEventListener("online",flush);
 }
